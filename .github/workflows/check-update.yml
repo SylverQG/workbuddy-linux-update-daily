@@ -1,0 +1,204 @@
+name: 每日检测 WorkBuddy 更新
+
+on:
+  schedule:
+    # UTC 01:30 = 北京时间 09:30，每天运行一次
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+    inputs:
+      force_release:
+        description: "强制重建当前版本的 Release（删除已有同名 Release 后重新发布）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # 创建 Release
+  pages: write    # 部署 GitHub Pages
+  id-token: write # GitHub Pages OIDC 部署
+
+# 同一时间只允许一个检测任务，避免并发发布
+concurrency:
+  group: workbuddy-update
+  cancel-in-progress: false
+
+env:
+  DEB_API: "https://www.workbuddy.cn/v2/update?platform=workbuddy-linux-x64-deb"
+  RPM_API: "https://www.workbuddy.cn/v2/update?platform=workbuddy-linux-x64-rpm"
+  OFFICIAL_SITE: "https://www.workbuddy.cn"
+
+jobs:
+  check-and-release:
+    name: 检测官方更新并发布 Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 获取官方更新元数据
+        id: meta
+        run: |
+          mkdir -p build
+          curl -fsSL --retry 5 --retry-delay 3 "$DEB_API" -o build/deb.json
+          curl -fsSL --retry 5 --retry-delay 3 "$RPM_API" -o build/rpm.json
+
+          DEB_VERSION=$(jq -r '.version // empty' build/deb.json)
+          RPM_VERSION=$(jq -r '.version // empty' build/rpm.json)
+          [ -n "$DEB_VERSION" ] || { echo "::error::deb 元数据缺少 version 字段"; exit 1; }
+          [ -n "$RPM_VERSION" ] || { echo "::error::rpm 元数据缺少 version 字段"; exit 1; }
+
+          # 以较高的版本号作为本次检测版本（正常情况下 deb 与 rpm 版本一致）
+          VERSION=$(printf '%s\n%s\n' "$DEB_VERSION" "$RPM_VERSION" | sort -V | tail -n 1)
+          echo "deb=$DEB_VERSION rpm=$RPM_VERSION 本次检测版本=$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: 下载安装包（官方 CDN）
+        run: |
+          DEB_URL=$(jq -r '.url' build/deb.json)
+          RPM_URL=$(jq -r '.url' build/rpm.json)
+          curl -fL --retry 5 --retry-delay 3 "$DEB_URL" -o "build/$(basename "$DEB_URL")"
+          curl -fL --retry 5 --retry-delay 3 "$RPM_URL" -o "build/$(basename "$RPM_URL")"
+          ls -lh build
+
+      - name: 校验 SHA-256 并生成资产清单
+        run: |
+          set -euo pipefail
+          DEB_FILE=$(basename "$(jq -r '.url' build/deb.json)")
+          RPM_FILE=$(basename "$(jq -r '.url' build/rpm.json)")
+
+          verify() {
+            local file="$1" meta="$2" expected actual
+            expected=$(jq -r '.sha256hash // empty' "$meta" | tr 'A-Z' 'a-z')
+            [ -n "$expected" ] || { echo "::error::$meta 缺少 sha256hash 字段"; exit 1; }
+            actual=$(sha256sum "$file" | awk '{print $1}')
+            if [ "$expected" != "$actual" ]; then
+              echo "::error::$file SHA-256 校验失败：期望 $expected，实际 $actual"
+              exit 1
+            fi
+            echo "✅ $file SHA-256 校验通过"
+          }
+          verify "build/$DEB_FILE" build/deb.json
+          verify "build/$RPM_FILE" build/rpm.json
+
+          jq -n \
+            --arg debFile "$DEB_FILE" --argjson debSize "$(stat -c %s "build/$DEB_FILE")" \
+            --arg rpmFile "$RPM_FILE" --argjson rpmSize "$(stat -c %s "build/$RPM_FILE")" \
+            '{deb:{fileName:$debFile,fileSize:$debSize},rpm:{fileName:$rpmFile,fileSize:$rpmSize}}' \
+            > build/assets.json
+
+          ( cd build && sha256sum "$DEB_FILE" "$RPM_FILE" > checksums.txt )
+          cat build/checksums.txt
+
+      - name: 生成 Release 说明
+        env:
+          TAG: v${{ steps.meta.outputs.version }}
+        run: |
+          python3 -I scripts/gen_release_notes.py \
+            --deb build/deb.json --rpm build/rpm.json \
+            --assets build/assets.json --tag "$TAG" \
+            --deb-api "$DEB_API" --rpm-api "$RPM_API" \
+            --official-site "$OFFICIAL_SITE" \
+            --out build/notes.md
+          cat build/notes.md
+
+      - name: 发布 Release（有新版本时）
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ steps.meta.outputs.version }}
+          FORCE: ${{ inputs.force_release }}
+        run: |
+          set -euo pipefail
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          DEB_ASSET="build/$(jq -r '.deb.fileName' build/assets.json)"
+          RPM_ASSET="build/$(jq -r '.rpm.fileName' build/assets.json)"
+
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "$FORCE" = "true" ]; then
+              echo "强制模式：删除已有 Release $TAG 后重建"
+              gh release delete "$TAG" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            else
+              echo "Release $TAG 已存在，版本未变化，跳过发布"
+              echo "released=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          gh release create "$TAG" \
+            -R "$GITHUB_REPOSITORY" \
+            --title "WorkBuddy $TAG" \
+            --notes-file build/notes.md \
+            "$DEB_ASSET" "$RPM_ASSET" build/checksums.txt
+          echo "released=true" >> "$GITHUB_OUTPUT"
+
+      - name: 生成 Pages 数据
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ steps.meta.outputs.version }}
+        run: |
+          python3 -I scripts/build_site_data.py \
+            --meta-dir build --out build/site \
+            --repo "$GITHUB_REPOSITORY" --tag "$TAG" \
+            --deb-api "$DEB_API" --rpm-api "$RPM_API" \
+            --official-site "$OFFICIAL_SITE"
+          ls -l build/site
+
+      - name: 上传 Pages 数据
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-data
+          path: build/site
+          retention-days: 7
+
+      - name: 写入运行摘要
+        run: |
+          {
+            echo "## WorkBuddy 更新检测结果"
+            echo ""
+            echo "| 项目 | 内容 |"
+            echo "| --- | --- |"
+            echo "| 本次检测版本 | v${{ steps.meta.outputs.version }} |"
+            echo "| 是否发布新 Release | ${{ steps.release.outputs.released }} |"
+            echo "| deb | $(jq -r '.version' build/deb.json) — [官方直链]($(jq -r '.url' build/deb.json)) |"
+            echo "| rpm | $(jq -r '.version' build/rpm.json) — [官方直链]($(jq -r '.url' build/rpm.json)) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-pages:
+    name: 部署 GitHub Pages
+    needs: check-and-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 下载检测数据
+        uses: actions/download-artifact@v4
+        with:
+          name: site-data
+          path: build/site
+
+      - name: 组装站点
+        run: |
+          mkdir -p site/data
+          cp -r public/. site/
+          cp build/site/*.json site/data/
+          touch site/.nojekyll
+
+      - name: 配置 Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true # 首次运行时自动启用 Pages
+
+      - name: 上传站点产物
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: 部署
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WorkBuddy Linux 更新镜像</title>
+<meta name="description" content="每日自动检测 WorkBuddy 官方更新，将 deb / rpm 安装包镜像到 GitHub Releases，并提供官方下载直链与 SHA-256 校验值供核对。">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%234460ff'/%3E%3Ctext%20x='32'%20y='43'%20font-size='30'%20font-family='sans-serif'%20font-weight='700'%20text-anchor='middle'%20fill='white'%3EW%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="./">
+      <span class="logo">W</span>
+      <span class="brand-text">WorkBuddy <em>Linux 更新镜像</em></span>
+    </a>
+    <nav class="nav">
+      <a id="nav-official" href="https://www.workbuddy.cn" target="_blank" rel="noopener">官网</a>
+      <a id="nav-repo" href="#" target="_blank" rel="noopener">GitHub</a>
+      <a id="nav-releases" href="#" target="_blank" rel="noopener">Releases</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section class="hero">
+    <p class="hero-tag">每日自动检测 · 官方原包镜像</p>
+    <h1>WorkBuddy Linux 安装包<br><span class="grad">快速下载与核对</span></h1>
+    <p class="hero-sub">
+      GitHub Actions 每天 09:30（北京时间）从 WorkBuddy 官方更新接口检测新版本，
+      检测到更新后自动发布到 GitHub Releases。安装包来自官方 CDN，<strong>未做任何修改</strong>，
+      页面同时提供官方直链与 SHA-256，方便逐项核对。
+    </p>
+    <div id="status" class="status is-loading">
+      <span class="dot"></span><span>正在加载最新检测数据…</span>
+    </div>
+  </section>
+
+  <section id="packages" class="cards" hidden></section>
+
+  <section class="panel">
+    <h2>如何核对文件</h2>
+    <p>下载后计算 SHA-256，与页面或 Release 页中标注的值一致，即说明文件与官方发布完全相同：</p>
+    <pre class="code">sha256sum 文件名.deb   # 与上方卡片中的 SHA-256 比对</pre>
+    <p class="muted">
+      官方接口原始返回：
+      deb <a class="link" id="link-deb-api" href="#" target="_blank" rel="noopener">update?platform=…-deb</a>
+      ·
+      rpm <a class="link" id="link-rpm-api" href="#" target="_blank" rel="noopener">update?platform=…-rpm</a>
+      ，也可在 <a class="link" href="https://www.workbuddy.cn" target="_blank" rel="noopener">官网</a> 直接下载比对。
+    </p>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>历史版本</h2>
+      <a id="all-releases" href="#" target="_blank" rel="noopener" class="link">查看全部 Releases →</a>
+    </div>
+    <div id="history" class="table-wrap"><p class="muted">加载中…</p></div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <p>
+      数据来源：<a class="link" href="https://www.workbuddy.cn" target="_blank" rel="noopener">WorkBuddy 官网</a>
+      官方更新接口 · 本仓库仅为个人镜像存档，软件版权归官方所有，请以官方渠道为准。
+    </p>
+    <p class="muted" id="footer-repo"></p>
+  </div>
+</footer>
+
+<script src="assets/app.js"></script>
+</body>
+</html>
