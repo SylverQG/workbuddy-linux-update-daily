@@ -33,7 +33,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: 检出仓库
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 获取官方更新元数据
         id: meta
@@ -162,7 +162,7 @@ jobs:
           ls -l build/site
 
       - name: 上传 Pages 数据
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: site-data
           path: build/site
@@ -191,10 +191,10 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: 检出仓库
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 下载检测数据
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: site-data
           path: build/site
@@ -207,15 +207,16 @@ jobs:
           touch site/.nojekyll
 
       - name: 配置 Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
         with:
           enablement: true # 首次运行时自动启用 Pages
 
       - name: 上传站点产物
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: site
+          include-hidden-files: true # 保留 .nojekyll
 
       - name: 部署
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
