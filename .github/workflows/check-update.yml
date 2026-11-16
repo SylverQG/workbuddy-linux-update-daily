@@ -52,7 +52,32 @@ jobs:
           echo "deb=$DEB_VERSION rpm=$RPM_VERSION 本次检测版本=$VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: 判断是否需要发布
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ steps.meta.outputs.version }}
+          FORCE: ${{ inputs.force_release }}
+        run: |
+          set -euo pipefail
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "$FORCE" = "true" ]; then
+              echo "强制模式：删除已有 Release $TAG 后重建"
+              gh release delete "$TAG" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag
+              echo "should_release=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "Release $TAG 已存在，版本未变化：跳过下载与发布，仅刷新 Pages 数据"
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "Release $TAG 不存在：需要下载安装包并发布"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: 下载安装包（官方 CDN）
+        if: steps.gate.outputs.should_release == 'true'
         run: |
           DEB_URL=$(jq -r '.url' build/deb.json)
           RPM_URL=$(jq -r '.url' build/rpm.json)
@@ -61,6 +86,7 @@ jobs:
           ls -lh build
 
       - name: 校验 SHA-256 并生成资产清单
+        if: steps.gate.outputs.should_release == 'true'
         run: |
           set -euo pipefail
           DEB_FILE=$(basename "$(jq -r '.url' build/deb.json)")
@@ -90,6 +116,7 @@ jobs:
           cat build/checksums.txt
 
       - name: 生成 Release 说明
+        if: steps.gate.outputs.should_release == 'true'
         env:
           TAG: v${{ steps.meta.outputs.version }}
         run: |
@@ -101,35 +128,21 @@ jobs:
             --out build/notes.md
           cat build/notes.md
 
-      - name: 发布 Release（有新版本时）
+      - name: 发布 Release
         id: release
+        if: steps.gate.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: v${{ steps.meta.outputs.version }}
-          FORCE: ${{ inputs.force_release }}
         run: |
           set -euo pipefail
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
-          DEB_ASSET="build/$(jq -r '.deb.fileName' build/assets.json)"
-          RPM_ASSET="build/$(jq -r '.rpm.fileName' build/assets.json)"
-
-          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            if [ "$FORCE" = "true" ]; then
-              echo "强制模式：删除已有 Release $TAG 后重建"
-              gh release delete "$TAG" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag
-            else
-              echo "Release $TAG 已存在，版本未变化，跳过发布"
-              echo "released=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-
           gh release create "$TAG" \
             -R "$GITHUB_REPOSITORY" \
             --title "WorkBuddy $TAG" \
             --notes-file build/notes.md \
-            "$DEB_ASSET" "$RPM_ASSET" build/checksums.txt
+            "build/$(jq -r '.deb.fileName' build/assets.json)" \
+            "build/$(jq -r '.rpm.fileName' build/assets.json)" \
+            build/checksums.txt
           echo "released=true" >> "$GITHUB_OUTPUT"
 
       - name: 生成 Pages 数据
@@ -137,11 +150,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: v${{ steps.meta.outputs.version }}
         run: |
+          # 跳过下载时没有 assets.json，脚本会从已有 Release 资产推算文件名与大小
+          ASSETS_ARGS=""
+          [ -f build/assets.json ] && ASSETS_ARGS="--assets-file build/assets.json"
           python3 -I scripts/build_site_data.py \
             --meta-dir build --out build/site \
             --repo "$GITHUB_REPOSITORY" --tag "$TAG" \
             --deb-api "$DEB_API" --rpm-api "$RPM_API" \
-            --official-site "$OFFICIAL_SITE"
+            --official-site "$OFFICIAL_SITE" \
+            $ASSETS_ARGS
           ls -l build/site
 
       - name: 上传 Pages 数据
@@ -159,7 +176,7 @@ jobs:
             echo "| 项目 | 内容 |"
             echo "| --- | --- |"
             echo "| 本次检测版本 | v${{ steps.meta.outputs.version }} |"
-            echo "| 是否发布新 Release | ${{ steps.release.outputs.released }} |"
+            echo "| 结果 | ${{ steps.gate.outputs.should_release == 'true' && '✅ 新版本，已发布 Release' || '⏭️ 已存在，跳过下载与发布' }} |"
             echo "| deb | $(jq -r '.version' build/deb.json) — [官方直链]($(jq -r '.url' build/deb.json)) |"
             echo "| rpm | $(jq -r '.version' build/rpm.json) — [官方直链]($(jq -r '.url' build/rpm.json)) |"
           } >> "$GITHUB_STEP_SUMMARY"

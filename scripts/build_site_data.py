@@ -3,7 +3,8 @@
 
 数据来源：
 - build/deb.json、build/rpm.json：官方更新接口元数据（工作流前置步骤抓取）
-- build/assets.json：安装包文件名与大小（工作流前置步骤生成）
+- build/assets.json：安装包文件名与大小（可选；跳过下载时缺省，
+  此时文件名从官方直链推算、大小取自已有 Release 的同名资产）
 - GitHub Releases：默认通过 gh api 拉取；本地调试可用 --releases-file 指定 JSON 文件
 """
 from __future__ import annotations
@@ -12,8 +13,10 @@ import argparse
 import datetime as dt
 import json
 import pathlib
+import posixpath
 import subprocess
 import sys
+import urllib.parse
 
 TZ_BEIJING = dt.timezone(dt.timedelta(hours=8))
 
@@ -73,14 +76,28 @@ def asset_url(release: dict | None, file_name: str, repo: str, tag: str) -> str:
     return f"https://github.com/{repo}/releases/download/{tag}/{file_name}"
 
 
+def url_basename(url: str) -> str:
+    return posixpath.basename(urllib.parse.urlparse(url).path)
+
+
 def package_entry(platform: str, meta: dict, asset: dict, api_url: str,
                   release: dict | None, repo: str, tag: str) -> dict:
-    file_name = asset["fileName"]
+    # 文件名优先取资产清单；跳过下载时从官方直链推算
+    file_name = asset.get("fileName") or url_basename(meta.get("url", ""))
+
+    # 大小优先取资产清单；跳过下载时取已有 Release 中同名资产的大小
+    file_size = asset.get("fileSize")
+    if file_size is None and release:
+        for a in release["assets"]:
+            if a["name"] == file_name:
+                file_size = a["size"]
+                break
+
     return {
         "platform": platform,
         "version": meta.get("version", ""),
         "fileName": file_name,
-        "fileSize": asset["fileSize"],
+        "fileSize": file_size,
         "sha256": (meta.get("sha256hash") or "").lower(),
         "officialDownloadUrl": meta.get("url", ""),
         "officialApiUrl": api_url,
@@ -98,13 +115,14 @@ def main() -> None:
     parser.add_argument("--deb-api", required=True)
     parser.add_argument("--rpm-api", required=True)
     parser.add_argument("--official-site", default="https://www.workbuddy.cn")
+    parser.add_argument("--assets-file", help="安装包清单 JSON（可选；不提供时从官方直链与 Release 资产推算）")
     parser.add_argument("--releases-file", help="调试用：从此 JSON 文件读取 Releases，而不调用 gh api")
     args = parser.parse_args()
 
     meta_dir = pathlib.Path(args.meta_dir)
     deb = load_json(meta_dir / "deb.json")
     rpm = load_json(meta_dir / "rpm.json")
-    assets = load_json(meta_dir / "assets.json")
+    assets = load_json(pathlib.Path(args.assets_file)) if args.assets_file else {}
 
     if args.releases_file:
         raw = load_json(pathlib.Path(args.releases_file))
@@ -126,8 +144,8 @@ def main() -> None:
             "publishedAt": current.get("publishedAt") if current else None,
         },
         "packages": [
-            package_entry("deb", deb, assets["deb"], args.deb_api, current, args.repo, args.tag),
-            package_entry("rpm", rpm, assets["rpm"], args.rpm_api, current, args.repo, args.tag),
+            package_entry("deb", deb, assets.get("deb") or {}, args.deb_api, current, args.repo, args.tag),
+            package_entry("rpm", rpm, assets.get("rpm") or {}, args.rpm_api, current, args.repo, args.tag),
         ],
     }
 
