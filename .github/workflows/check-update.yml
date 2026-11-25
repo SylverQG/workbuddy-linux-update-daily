@@ -15,6 +15,7 @@ permissions:
   contents: write # 创建 Release
   pages: write    # 部署 GitHub Pages
   id-token: write # GitHub Pages OIDC 部署
+  actions: read   # deploy-pages 查询本次运行的 artifact
 
 # 同一时间只允许一个检测任务，避免并发发布
 concurrency:
@@ -205,6 +206,12 @@ jobs:
           cp -r public/. site/
           cp build/site/*.json site/data/
           touch site/.nojekyll
+
+      # 已知偶发竞态：artifact 刚上传时列表接口可能尚未传播到位，
+      # 导致 deploy-pages 报 "No artifacts named github-pages"。
+      # 等待片刻让 artifact 可查询（见 deploy-pages issue tracker）。
+      - name: 等待 artifact 传播
+        run: sleep 10
 
       - name: 配置 Pages
         uses: actions/configure-pages@v6
